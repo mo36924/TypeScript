@@ -1285,6 +1285,274 @@ namespace ts {
         documentRegistry: DocumentRegistry = createDocumentRegistry(host.useCaseSensitiveFileNames && host.useCaseSensitiveFileNames(), host.getCurrentDirectory()),
         syntaxOnlyOrLanguageServiceMode?: boolean | LanguageServiceMode,
     ): LanguageService {
+        const { isGraphQLTag, getGraphQLTagOperation, validationRules, GraphQLError } = graphql;
+        const {
+            CompletionItemKind,
+            DIAGNOSTIC_SEVERITY,
+            Position,
+            getAutocompleteSuggestions,
+            getDiagnostics,
+            getHoverInformation,
+            getTokenAtPosition
+        } = graphqlLanguageService;
+        const languageService = _createLanguageService(host, documentRegistry, syntaxOnlyOrLanguageServiceMode);
+        const getSourceFile = (fileName: string) => languageService.getProgram()?.getSourceFile(fileName);
+
+        const getDiagnosticCategory = (severity?: number) => {
+            switch (severity) {
+                case DIAGNOSTIC_SEVERITY.Error:
+                    return DiagnosticCategory.Error;
+                case DIAGNOSTIC_SEVERITY.Warning:
+                    return DiagnosticCategory.Warning;
+                case DIAGNOSTIC_SEVERITY.Information:
+                    return DiagnosticCategory.Message;
+                case DIAGNOSTIC_SEVERITY.Hint:
+                    return DiagnosticCategory.Suggestion;
+                default:
+                    return DiagnosticCategory.Error;
+            }
+        };
+
+        const hover = (sourceFile: SourceFile, position: number) => {
+            const tag = forEachChild(sourceFile, function visitor(node): true | undefined | TaggedTemplateExpression {
+                if (position < node.pos) {
+                    return true;
+                }
+
+                if (position >= node.end) {
+                    return;
+                }
+
+                if (!isTaggedTemplateExpression(node)) {
+                    return forEachChild(node, visitor);
+                }
+
+                const tag = node.tag;
+
+                if (!tag) {
+                    return forEachChild(node, visitor);
+                }
+
+                const _tag = tag.getText();
+
+                if (!isGraphQLTag(_tag)) {
+                    return forEachChild(node, visitor);
+                }
+
+                const template = node.template;
+
+                if (isNoSubstitutionTemplateLiteral(template)) {
+                    if (position >= template.getStart() + 1 && position < template.getEnd() - 1) {
+                        return node;
+                    }
+                }
+                else {
+                    const head = template.head;
+                    if (position >= head.getStart() + 1 && position < head.getEnd() - 2) {
+                        return node;
+                    }
+                    for (const { literal } of template.templateSpans) {
+                        if (position >= literal.getStart() + 1 && position < literal.getEnd() - (isTemplateMiddle(literal) ? 2 : 1)) {
+                            return node;
+                        }
+                    }
+                }
+
+                return forEachChild(node, visitor);
+            });
+
+            if (tag === true) {
+                return;
+            }
+
+            return tag;
+        };
+
+        const buildGraphQL = (node: TaggedTemplateExpression) => {
+            const template = node.template;
+            let query: string;
+
+            if (isNoSubstitutionTemplateLiteral(template)) {
+                // 2 \`\`
+                const templateWidth = template.getWidth() - 2;
+                query = template.text.padStart(templateWidth);
+            }
+            else {
+                const head = template.head;
+                const templateSpans = template.templateSpans;
+                // 3 \`...\${
+                const templateWidth = head.getWidth() - 3;
+                query = head.text.padStart(templateWidth);
+                templateSpans.forEach((span, i) => {
+                    const spanWidth = span.getFullWidth();
+                    const literal = span.literal;
+                    const literalWidth = literal.getWidth();
+                    const expressionWidth = spanWidth - literalWidth;
+                    const variableName = `$_${i}`;
+                    const variable = variableName.padStart(expressionWidth + 2).padEnd(expressionWidth + 3);
+                    const templateWidth = literalWidth - (isTemplateTail(literal) ? 2 : 3);
+                    const template = literal.text.padStart(templateWidth);
+                    query += variable + template;
+                });
+            }
+
+            const operation = getGraphQLTagOperation(node.tag.getText() as any);
+
+            return {
+                query: operation + query.replace(/\n|\r/g, " "),
+                offset: template.getStart() + 1 - operation.length,
+            };
+        };
+
+        // eslint-disable-next-line no-null/no-null
+        const proxy: LanguageService = Object.create(null);
+
+        for (const [key, value] of Object.entries(languageService)) {
+            (proxy as any)[key] = value.bind(languageService);
+        }
+
+        proxy.getQuickInfoAtPosition = (fileName, position) => {
+            const sourceFile = getSourceFile(fileName);
+
+            if (!sourceFile) {
+                return undefined;
+            }
+
+            const tag = hover(sourceFile, position);
+
+            if (!tag) {
+                return languageService.getQuickInfoAtPosition(fileName, position);
+            }
+
+            const { query, offset } = buildGraphQL(tag);
+            const cursor = new Position(0, position - offset + 1);
+            const token = getTokenAtPosition(query, cursor);
+            const marked = getHoverInformation(graphqlSchema, query, cursor, token);
+
+            if (marked === "" || typeof marked !== "string") {
+                return;
+            }
+
+            return {
+                kind: ScriptElementKind.string,
+                textSpan: {
+                    start: offset + token.start,
+                    length: token.end - token.start,
+                },
+                kindModifiers: "",
+                displayParts: [{ text: marked, kind: "" }],
+            };
+        };
+
+        proxy.getCompletionsAtPosition = (fileName, position, options) => {
+            const sourceFile = getSourceFile(fileName);
+
+            if (!sourceFile) {
+                return undefined;
+            }
+
+            const tag = hover(sourceFile, position);
+
+            if (!tag) {
+                return languageService.getCompletionsAtPosition(fileName, position, options);
+            }
+
+            const { query, offset } = buildGraphQL(tag);
+            const cursor = new Position(0, position - offset);
+            const items = getAutocompleteSuggestions(graphqlSchema, query, cursor);
+
+            if (!items.length) {
+                return;
+            }
+
+            return {
+                isGlobalCompletion: false,
+                isMemberCompletion: false,
+                isNewIdentifierLocation: false,
+                entries: items.map((item) => {
+                    let kind;
+
+                    switch (item.kind) {
+                        case CompletionItemKind.Function:
+                        case CompletionItemKind.Constructor:
+                            kind = ScriptElementKind.functionElement;
+                            break;
+                        case CompletionItemKind.Field:
+                        case CompletionItemKind.Variable:
+                            kind = ScriptElementKind.memberVariableElement;
+                            break;
+                        default:
+                            kind = ScriptElementKind.unknown;
+                            break;
+                    }
+
+                    return {
+                        name: item.label,
+                        kindModifiers: "",
+                        kind,
+                        sortText: "",
+                    };
+                }),
+            };
+        };
+
+        proxy.getSemanticDiagnostics = (fileName) => {
+            const diagnostics = languageService.getSemanticDiagnostics(fileName);
+            const sourceFile = getSourceFile(fileName);
+
+            if (!sourceFile) {
+                return diagnostics;
+            }
+
+            forEachChild(sourceFile, function visitor(node) {
+                if (isTaggedTemplateExpression(node) && isIdentifier(node.tag) && isGraphQLTag(node.tag.getText())) {
+                    try {
+                        const { query, offset } = buildGraphQL(node);
+                        const _diagnostics = getDiagnostics(query, graphqlSchema, validationRules);
+
+                        for (const {
+                            range: { start, end },
+                            severity,
+                            message,
+                        } of _diagnostics) {
+                            diagnostics.push({
+                                category: getDiagnosticCategory(severity),
+                                code: 9999,
+                                messageText: message,
+                                file: sourceFile,
+                                start: start.character + offset,
+                                length: end.character - start.character,
+                            });
+                        }
+                    }
+                    catch (error) {
+                        if (error instanceof GraphQLError) {
+                            diagnostics.push({
+                                category: DiagnosticCategory.Error,
+                                code: 9999,
+                                messageText: error.message,
+                                file: sourceFile,
+                                start: node.template.getStart() + 1,
+                                length: node.template.getWidth() - 2,
+                            });
+                        }
+                    }
+                }
+
+                forEachChild(node, visitor);
+            });
+
+            return diagnostics;
+        };
+
+        return proxy;
+    };
+
+    function _createLanguageService(
+        host: LanguageServiceHost,
+        documentRegistry: DocumentRegistry = createDocumentRegistry(host.useCaseSensitiveFileNames && host.useCaseSensitiveFileNames(), host.getCurrentDirectory()),
+        syntaxOnlyOrLanguageServiceMode?: boolean | LanguageServiceMode,
+    ): LanguageService {
         let languageServiceMode: LanguageServiceMode;
         if (syntaxOnlyOrLanguageServiceMode === undefined) {
             languageServiceMode = LanguageServiceMode.Semantic;

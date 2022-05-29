@@ -165,4 +165,11 @@ namespace ts {
         if (constructor) return constructor as NonNullable<ReturnType<(typeof NativeCollections)[K1]>>;
         throw new Error(`TypeScript requires an environment that provides a compatible native ${name} implementation.`);
     }
+
+    /* @internal */
+    export const graphql: typeof import("@mo36924/graphql") = require("@mo36924/graphql");
+    /* @internal */
+    export const graphqlLanguageService: typeof import("graphql-language-service") = require("graphql-language-service");
+    /* @internal */
+    export const graphqlSchema = graphql.getSchema();
 }

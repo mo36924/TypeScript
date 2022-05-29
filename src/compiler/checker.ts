@@ -30229,13 +30229,183 @@ namespace ts {
             return result;
         }
 
+        function createPropertySymbolWithType(name: string, type: Type, readonly?: boolean) {
+            const symbol = createSymbol(SymbolFlags.Property, name as __String, readonly ? CheckFlags.Readonly : undefined);
+            symbol.type = type;
+            return symbol;
+        }
+
+        function createPropertiesType(symbolTable: SymbolTable) {
+            const type = createAnonymousType(undefined, symbolTable, emptyArray, emptyArray, emptyArray);
+            return type;
+        }
+
+        function getTypescriptType(typeName: string) {
+            const symbol = getGlobalSymbol("GraphQL" as __String, SymbolFlags.Namespace, undefined);
+            const exportsSymbol = symbol && getExportsOfSymbol(symbol);
+            const typeSymbol = exportsSymbol && getSymbol(exportsSymbol, typeName as __String, SymbolFlags.Type);
+            const type = typeSymbol && getDeclaredTypeOfSymbol(typeSymbol);
+            return type || unknownType;
+        }
+
+        function getEffectiveGraphQLTemplateStringsArrayType(node: TaggedTemplateExpression): Type | void {
+            const { tag, template } = node;
+            const {
+                isGraphQLTag,
+                getGraphQLTagOperation,
+                parse,
+                validate,
+                validationRules,
+                TypeInfo,
+                visit,
+                visitWithTypeInfo,
+                getNullableType,
+                getNamedType,
+                isListType,
+                isNullableType
+            } = graphql;
+
+            if (!isIdentifier(tag)) {
+                return;
+            }
+
+            const tagName = tag.escapedText.toString();
+
+            if (!isGraphQLTag(tagName)) {
+                return;
+            }
+
+            let query = getGraphQLTagOperation(tagName);
+
+            if (isNoSubstitutionTemplateLiteral(template)) {
+                query += template.text;
+            }
+            else {
+                query += template.head.text;
+
+                template.templateSpans.forEach((span, i) => {
+                    query += `$_${i}${span.literal.text}`;
+                });
+            }
+
+            let documentNode: ReturnType<typeof parse>;
+
+            try {
+                documentNode = parse(query);
+            }
+            catch {
+                return;
+            }
+
+            const errors = validate(graphqlSchema, documentNode, validationRules);
+
+            if (errors.length) {
+                return;
+            }
+
+            const typeInfo = new TypeInfo(graphqlSchema);
+            const values: Type[] = [];
+            const variables: Symbol[] = [];
+            const symbols: Symbol[] = [];
+            const symbolsMap = new Map<any, Symbol[]>();
+            let i = 0;
+
+            visit(
+                documentNode,
+                visitWithTypeInfo(typeInfo, {
+                    Variable() {
+                        const variableName = `_${i++}`;
+                        const inputType = typeInfo.getInputType()!;
+                        const nullableType = getNullableType(inputType);
+                        const namedType = getNamedType(nullableType);
+                        let type = getTypescriptType(namedType.name);
+
+                        if (isListType(nullableType)) {
+                            type = createArrayType(type);
+                        }
+
+                        if (isNullableType(inputType)) {
+                            type = getUnionType([type, nullType]);
+                        }
+
+                        const symbol = createPropertySymbolWithType(variableName, type);
+                        values.push(type);
+                        variables.push(symbol);
+                    },
+                    Field: {
+                        enter(node, _key, parent) {
+                            if (node.selectionSet) {
+                                symbolsMap.set(node.selectionSet.selections, []);
+                                return;
+                            }
+
+                            const parentSymbols = symbolsMap.get(parent) || symbols;
+                            const fieldName = (node.alias || node.name).value;
+                            const outputType = typeInfo.getType()!;
+                            const namedType = getNamedType(outputType);
+                            let type = getTypescriptType(namedType.name);
+
+                            if (isNullableType(outputType)) {
+                                type = getUnionType([type, nullType]);
+                            }
+
+                            const symbol = createPropertySymbolWithType(fieldName, type);
+                            parentSymbols.push(symbol);
+                            return false;
+                        },
+                        leave(node, _key, parent) {
+                            const parentSymbols = symbolsMap.get(parent) || symbols;
+                            const fieldName = (node.alias || node.name).value;
+                            const outputType = typeInfo.getType()!;
+                            const nullableType = getNullableType(outputType);
+                            const selectionSymbols = symbolsMap.get(node.selectionSet!.selections);
+                            const selectionSymbolTable = createSymbolTable(selectionSymbols);
+                            let type: Type = createPropertiesType(selectionSymbolTable);
+
+                            if (isListType(nullableType)) {
+                                type = createArrayType(type);
+                            }
+
+                            if (isNullableType(outputType)) {
+                                type = getUnionType([type, nullType]);
+                            }
+
+                            const symbol = createPropertySymbolWithType(fieldName, type);
+                            parentSymbols.push(symbol);
+                        },
+                    },
+                }),
+            );
+
+            const valuesSymbol = createPropertySymbolWithType("values", createTupleType(values));
+
+            const variablesSymbol = createPropertySymbolWithType(
+                "variables",
+                createPropertiesType(createSymbolTable(variables)),
+            );
+
+            const dataSymbol = createPropertySymbolWithType("data", createPropertiesType(createSymbolTable(symbols)));
+
+            const graphqlSymbol = createPropertySymbolWithType(
+                "graphql",
+                createPropertiesType(createSymbolTable([valuesSymbol, variablesSymbol, dataSymbol])),
+            );
+
+            const graphQLTemplateStringsArrayType = getIntersectionType([
+                getGlobalTemplateStringsArrayType(),
+                createPropertiesType(createSymbolTable([graphqlSymbol])),
+            ]);
+
+            return graphQLTemplateStringsArrayType;
+        }
+
         /**
          * Returns the effective arguments for an expression that works like a function invocation.
          */
         function getEffectiveCallArguments(node: CallLikeExpression): readonly Expression[] {
             if (node.kind === SyntaxKind.TaggedTemplateExpression) {
                 const template = node.template;
-                const args: Expression[] = [createSyntheticExpression(template, getGlobalTemplateStringsArrayType())];
+                const args: Expression[] = [createSyntheticExpression(template, getEffectiveGraphQLTemplateStringsArrayType(node) || getGlobalTemplateStringsArrayType())];
                 if (template.kind === SyntaxKind.TemplateExpression) {
                     forEach(template.templateSpans, span => {
                         args.push(span.expression);

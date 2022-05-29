@@ -1,5 +1,5 @@
 {
-    "name": "typescript",
+    "name": "@mo36924/typescript",
     "author": "Microsoft Corp.",
     "homepage": "https://www.typescriptlang.org/",
     "version": "4.7.2",
@@ -69,6 +69,7 @@
         "fancy-log": "latest",
         "fs-extra": "^9.0.0",
         "glob": "latest",
+        "graphql-config": "^4.3.1",
         "gulp": "^4.0.0",
         "gulp-concat": "latest",
         "gulp-insert": "latest",
@@ -119,5 +120,12 @@
     },
     "volta": {
         "node": "14.15.5"
+    },
+    "dependencies": {
+        "@mo36924/graphql": "^2.0.4",
+        "graphql-language-service": "^5.0.4"
+    },
+    "publishConfig": {
+        "access": "public"
     }
 }

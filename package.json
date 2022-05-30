@@ -2,7 +2,7 @@
     "name": "@mo36924/typescript",
     "author": "Microsoft Corp.",
     "homepage": "https://www.typescriptlang.org/",
-    "version": "4.7.2",
+    "version": "4.7.3",
     "license": "Apache-2.0",
     "description": "TypeScript is a language for application scale JavaScript development",
     "keywords": [
@@ -30,6 +30,7 @@
     },
     "packageManager": "npm@6.14.15",
     "devDependencies": {
+        "@mo36924/graphql": "^2.0.6",
         "@octokit/rest": "latest",
         "@types/chai": "latest",
         "@types/convert-source-map": "latest",
@@ -70,6 +71,7 @@
         "fs-extra": "^9.0.0",
         "glob": "latest",
         "graphql-config": "^4.3.1",
+        "graphql-language-service": "^5.0.4",
         "gulp": "^4.0.0",
         "gulp-concat": "latest",
         "gulp-insert": "latest",
@@ -90,6 +92,10 @@
         "vinyl": "latest",
         "vinyl-sourcemaps-apply": "latest",
         "xml2js": "^0.4.19"
+    },
+    "peerDependencies": {
+        "@mo36924/graphql": "^2.0.6",
+        "graphql-language-service": "^5.0.4"
     },
     "scripts": {
         "prepare": "gulp build-eslint-rules",
@@ -120,10 +126,6 @@
     },
     "volta": {
         "node": "14.15.5"
-    },
-    "dependencies": {
-        "@mo36924/graphql": "^2.0.4",
-        "graphql-language-service": "^5.0.4"
     },
     "publishConfig": {
         "access": "public"
